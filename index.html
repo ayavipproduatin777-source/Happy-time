@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="vi"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="Happy">
+<meta name="theme-color" content="#000000">
+<link rel="manifest" href="./manifest.webmanifest"><link rel="apple-touch-icon" href="./icon-180.png">
+<title>Happy Player</title>
+<style>
+:root{color-scheme:dark}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+html,body{margin:0;height:100%;background:#0b0b10;color:#f2f2f5;font:16px/1.5 -apple-system,"Hiragino Sans",system-ui,sans-serif;touch-action:manipulation}
+main{min-height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:24px;padding-top:calc(24px + env(safe-area-inset-top));padding-bottom:calc(24px + env(safe-area-inset-bottom));text-align:center}
+h1{margin:0;font-size:26px;letter-spacing:.02em}
+p{margin:0;color:#a8a8b5;max-width:440px}
+button,label.btn{appearance:none;border:0;border-radius:14px;padding:15px 26px;font:600 17px inherit;font-family:inherit;color:#fff;background:#e0508a;min-width:240px;cursor:pointer;display:inline-block}
+button.alt,label.alt{background:#2a2a36}
+button:disabled{opacity:.5}
+input[type=file]{display:none}
+#bar{width:min(320px,80vw);height:8px;border-radius:4px;background:#2a2a36;overflow:hidden;display:none}
+#bar i{display:block;height:100%;width:0;background:#e0508a;transition:width .15s}
+#msg{min-height:1.5em;color:#ffd27a}
+small{color:#707080}
+</style></head><body><main>
+<h1>Happy Player</h1>
+<p id="intro">Chọn file <b>Happy-web.zip</b> trong ứng dụng Tệp. Game sẽ được giải nén và lưu ngay trong Safari, chỉ cần làm một lần.</p>
+<button id="play" style="display:none">▶ Chơi game</button>
+<label class="btn" id="pick" for="file">Chọn file Happy-web.zip</label>
+<input id="file" type="file" accept=".zip,application/zip">
+<div id="bar"><i></i></div>
+<div id="msg"></div>
+<button class="alt" id="wipe" style="display:none">Xoá game đã lưu</button>
+<small id="info"></small>
+</main>
+<script>
+(()=>{
+'use strict';
+const CACHE='happy-game-v1', $=s=>document.getElementById(s);
+const SKIP=/(^|\/)(sw\.js|serve\.py|HUONG_DAN\.txt|__MACOSX\/|\.DS_Store)/;
+const MIME={html:'text/html;charset=utf-8',js:'text/javascript',css:'text/css',json:'application/json',png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',gif:'image/gif',svg:'image/svg+xml',m4a:'audio/mp4',mp3:'audio/mpeg',ogg:'audio/ogg',mp4:'video/mp4',webm:'video/webm',ks:'text/plain;charset=utf-8',tjs:'text/plain;charset=utf-8',txt:'text/plain;charset=utf-8',webmanifest:'application/manifest+json'};
+const msg=t=>$('msg').textContent=t||'';
+const key=p=>new Request(location.origin+'/game/'+p.split('/').map(encodeURIComponent).join('/'));
+
+async function swReady(){
+  if(!('serviceWorker' in navigator)) throw new Error('Trình duyệt này không hỗ trợ Service Worker.');
+  await navigator.serviceWorker.register('./sw.js'); await navigator.serviceWorker.ready;
+}
+async function installed(){
+  try{ const c=await caches.open(CACHE); return !!(await c.match(key('index.html'))); }catch(_){return false}
+}
+async function refresh(){
+  const ok=await installed();
+  $('play').style.display=ok?'inline-block':'none';
+  $('wipe').style.display=ok?'inline-block':'none';
+  $('pick').textContent=ok?'Nạp lại từ file zip':'Chọn file Happy-web.zip';
+  $('pick').classList.toggle('alt',ok);
+  $('intro').style.display=ok?'none':'block';
+  if(navigator.storage&&navigator.storage.estimate){const e=await navigator.storage.estimate();$('info').textContent='Đã dùng '+Math.round((e.usage||0)/1048576)+' MB';}
+}
+
+/* ---- minimal ZIP reader (reads from File.slice, never loads the whole zip) ---- */
+async function readEntries(file){
+  const tailLen=Math.min(file.size,66000);
+  const tail=new DataView(await file.slice(file.size-tailLen).arrayBuffer());
+  let e=-1; for(let i=tailLen-22;i>=0;i--){ if(tail.getUint32(i,true)===0x06054b50){e=i;break;} }
+  if(e<0) throw new Error('Đây không phải file zip hợp lệ.');
+  const total=tail.getUint16(e+10,true), cdSize=tail.getUint32(e+12,true), cdOff=tail.getUint32(e+16,true);
+  if(total===0xFFFF||cdOff===0xFFFFFFFF) throw new Error('Zip64 chưa được hỗ trợ.');
+  const cd=new DataView(await file.slice(cdOff,cdOff+cdSize).arrayBuffer()), td=new TextDecoder('utf-8');
+  const out=[]; let p=0;
+  for(let n=0;n<total;n++){
+    if(cd.getUint32(p,true)!==0x02014b50) break;
+    const method=cd.getUint16(p+10,true), csize=cd.getUint32(p+20,true), usize=cd.getUint32(p+24,true);
+    const nl=cd.getUint16(p+28,true), xl=cd.getUint16(p+30,true), cl=cd.getUint16(p+32,true), lho=cd.getUint32(p+42,true);
+    const name=td.decode(new Uint8Array(cd.buffer,cd.byteOffset+p+46,nl));
+    out.push({name,method,csize,usize,lho}); p+=46+nl+xl+cl;
+  }
+  return out;
+}
+async function entryBlob(file,en){
+  const h=new DataView(await file.slice(en.lho,en.lho+30).arrayBuffer());
+  const start=en.lho+30+h.getUint16(26,true)+h.getUint16(28,true);
+  const raw=file.slice(start,start+en.csize);
+  if(en.method===0) return raw;
+  if(en.method===8){
+    if(typeof DecompressionStream==='undefined') throw new Error('Safari quá cũ (cần iOS 16.4+).');
+    return await new Response(raw.stream().pipeThrough(new DecompressionStream('deflate-raw'))).blob();
+  }
+  throw new Error('Kiểu nén zip không hỗ trợ: '+en.method);
+}
+
+async function install(file){
+  $('pick').style.pointerEvents='none'; $('bar').style.display='block'; const bar=$('bar').firstElementChild;
+  try{
+    msg('Đang đọc file zip…'); await swReady();
+    if(navigator.storage&&navigator.storage.persist) navigator.storage.persist().catch(()=>{});
+    let list=(await readEntries(file)).filter(e=>!e.name.endsWith('/')&&!SKIP.test(e.name));
+    if(list.some(e=>/\.exe$/i.test(e.name))&&!list.some(e=>/(^|\/)index\.html$/.test(e.name)))
+      throw new Error('Đây là file game gốc. Hãy chọn file Happy-web.zip (bản đã chuyển cho iPhone).');
+    const idx=list.filter(e=>/(^|\/)index\.html$/.test(e.name)).sort((a,b)=>a.name.length-b.name.length)[0];
+    if(!idx) throw new Error('Không thấy index.html trong zip.');
+    const prefix=idx.name.slice(0,idx.name.length-'index.html'.length);
+    list=list.filter(e=>e.name.startsWith(prefix));
+    await caches.delete(CACHE); const c=await caches.open(CACHE);
+    const totalBytes=list.reduce((s,e)=>s+e.usize,0)||1; let done=0;
+    for(let i=0;i<list.length;i++){
+      const en=list[i], rel=en.name.slice(prefix.length).normalize('NFC');
+      const blob=await entryBlob(file,en);
+      const ext=rel.split('.').pop().toLowerCase();
+      await c.put(key(rel),new Response(blob,{headers:{'Content-Type':MIME[ext]||'application/octet-stream','Content-Length':String(blob.size)}}));
+      done+=en.usize; bar.style.width=Math.round(done/totalBytes*100)+'%';
+      if(i%5===0) msg(`Đang lưu… ${i+1}/${list.length}`);
+    }
+    msg('Xong! Bấm “Chơi game”.'); 
+  }catch(err){ console.error(err); msg('Lỗi: '+(err&&err.message||err)); await caches.delete(CACHE).catch(()=>{}); }
+  $('pick').style.pointerEvents=''; setTimeout(()=>{$('bar').style.display='none';bar.style.width='0'},600); refresh();
+}
+
+$('file').addEventListener('change',e=>{const f=e.target.files[0]; e.target.value=''; if(f) install(f);});
+$('play').addEventListener('click',async()=>{ try{await swReady();}catch(e){return msg(e.message);} location.href='./game/index.html'; });
+$('wipe').addEventListener('click',async()=>{ if(confirm('Xoá game đã lưu? (Dữ liệu save game vẫn giữ.)')){await caches.delete(CACHE);msg('Đã xoá.');refresh();} });
+swReady().catch(e=>msg(e.message)); refresh();
+})();
+</script></body></html>
